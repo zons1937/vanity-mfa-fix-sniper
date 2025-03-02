@@ -1,7 +1,7 @@
 @echo off
 color a
 :a
-title Telepatia % Morvay FAST Sniper { discord.gg/38 }
+title hmmmm
 node index.js --high
 goto a
 pause
