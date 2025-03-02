@@ -1,0 +1,217 @@
+import tls from 'tls';
+import WebSocket from 'ws';
+import extractJsonFromString from 'extract-json-from-string';
+import axios from 'axios';
+import https from 'https';
+import http from 'http';
+const config = {
+  token: '',
+  serverId: '',
+  gatewayURL: 'wss://gateway-us-east1-b.discord.gg',
+  webhookURL: ''
+};
+const state = {
+  guilds: {},
+  vanity: null,
+  currentMfaToken: '',
+  sessionCache: new Map()
+};
+const notifyWebhook = async (find) => {
+  const requestBody = {
+    content: `@everyone **${state.vanity}**`,
+    username: 'XD',
+    avatar_url: 'https://cdn.discordapp.com/attachments/1336038663305560088/1342993035646206092/36fab0f6be98f8fd1c1d298e9ae50ebf.gif?ex=67bba73b&is=67ba55bb&hm=c48603611f9f6fcbf435b489117f831c0755f30c7874c3ea44e079011268a2a5&',
+    embeds: [{
+      title: 'Vanity Claimed.',
+      description: `\`\`\`${JSON.stringify(find)}\`\`\``,
+      color: 0x000080,
+      image: { url: 'https://cdn.discordapp.com/attachments/1336038663305560088/1342992620573556800/23a6895008228f5ecfddf508bbf0b5be.gif?ex=67bba6d8&is=67ba5558&hm=e5f8d6bda3789ebac1434c1f4c2cb6fe3295ec2de10e1c228a5040d2eccd4ce1&' },
+      fields: [{ name: 'Value', value: `\`${state.vanity}\``, inline: true }],
+      footer: {
+        text: `${new Date().toLocaleString('tr-TR', { hour12: false })}`,
+        icon_url: 'ingiltereli x morvay | https://cdn.discordapp.com/attachments/1336038663305560088/1342993731451879454/images-2.jpg?ex=67bba7e1&is=67ba5661&hm=22d649c8c3476bdde704459b02507856adc564256df8cf40fe914e2d75785f1b&'
+      },
+      timestamp: new Date().toISOString()
+    }]
+  };
+  try {
+    await axios.post(config.webhookURL, requestBody);
+  } catch (error) {
+    console.error('Failed to notify webhook:', error);
+  }
+};
+const setupTLS = () => {
+  const reconnect = () => setTimeout(setupTLS, 1000);
+  const agent = new https.Agent({
+    keepAlive: true,
+    secureProtocol: 'TLSv1_2_method',
+    rejectUnauthorized: false,
+    session: state.sessionCache.get("canary.discord.com"),
+    maxSockets: Infinity,
+    servername: 'canary.discord.com',
+  });
+  const tlsSocket = tls.connect({
+    host: 'canary.discord.com',
+    port: 8443,
+    minVersion: 'TLSv1.2',
+    maxVersion: 'TLSv1.2',
+    handshakeTimeout: 0,
+    rejectUnauthorized: false,
+    zeroRtt: true,
+    servername: 'canary.discord.com',
+    keepAlive: true,
+    session: state.sessionCache.get('canary.discord.com'),
+  });
+  const performPatchRequest = async (vanityCode) => {
+    const requestBody = { code: vanityCode };
+    state.vanity = vanityCode;
+    const headers = {
+      Authorization: config.token,
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9164 Chrome/124.0.6367.243 Electron/30.2.0 Safari/537.36',
+      'X-Super-Properties': 'eyJvcyI6IkFuZHJvaWQiLCJicm93c2VyIjoiQW5kcm9pZCBDaHJvbWUiLCJkZXZpY2UiOiJBbmRyb2lkIiwic3lzdGVtX2xvY2FsZSI6InRyLVRSIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKExpbnV4OyBBbmRyb2lkIDYuMDsgTmV4dXMgNSBCdWlsZC9NUkE1OE4pIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS8xMzEuMC4wLjAgTW9iaWxlIFNhZmFyaS81MzcuMzYiLCJicm93c2VyX3ZlcnNpb24iOiIxMzEuMC4wLjAiLCJvc192ZXJzaW9uIjoiNi4wIiwicmVmZXJyZXIiOiJodHRwczovL2Rpc2NvcmQuY29tL2NoYW5uZWxzL0BtZS8xMzAzMDQ1MDIyNjQzNTIzNjU1IiwicmVmZXJyaW5nX2RvbWFpbiI6ImRpc2NvcmQuY29tIiwicmVmZXJyaW5nX2N1cnJlbnQiOiIiLCJyZWxlYXNlX2NoYW5uZWwiOiJzdGFibGUiLCJjbGllbnRfYnVpbGRfbnVtYmVyIjozNTU2MjQsImNsaWVudF9ldmVudF9zb3VyY2UiOm51bGwsImhhc19jbGllbnRfbW9kcyI6ZmFsc2V9=',
+      'X-Discord-MFA-Authorization': state.currentMfaToken,
+      Cookie: `__Secure-recent_mfa=${state.currentMfaToken}`,
+    };
+    try {
+      await Promise.all([
+        tlsRequest(requestBody),
+        axios.patch(`https://canary.discord.com/api/v7/guilds/${config.serverId}/vanity-url`, requestBody, { 
+          headers, 
+          httpsAgent: agent,
+          maxRedirects: 0 
+        })
+      ]);
+    } catch (error) {
+      console.error('Failed to send PATCH request:', error);
+    }
+  };
+  const tlsRequest = (requestBody) => {
+    tlsSocket.write(
+      `PATCH /api/v9/guilds/${config.serverId}/vanity-url HTTP/1.1\r\n` +
+      `Host: canary.discord.com\r\n` +
+      `Authorization: ${config.token}\r\n` +
+      `Content-Type: application/json\r\n` +
+      `Content-Length: ${JSON.stringify(requestBody).length}\r\n` +
+      `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.1130 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36\r\n` +
+      `X-Super-Properties: eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiRGlzY29yZCBDbGllbnQiLCJyZWxlYXNlX2NoYW5uZWwiOiJwdGIiLCJjbGllbnRfdmVyc2lvbiI6IjEuMC4xMTMwIiwib3NfdmVyc2lvbiI6IjEwLjAuMTkwNDUiLCJvc19hcmNoIjoieDY0IiwiYXBwX2FyY2giOiJ4NjQiLCJzeXN0ZW1fbG9jYWxlIjoidHIiLCJoYXNfY2xpZW50X21vZHMiOmZhbHNlLCJicm93c2VyX3VzZXJfYWdlbnQiOiJNb3ppbGxhLzUuMCAoV2luZG93cyBOVCAxMC4wOyBXaW42NDsgeDY0KSBBcHBsZVdlYktpdC81MzcuMzYgKEtIVE1MLCBsaWtlIEdlY2tvKSBkaXNjb3JkLzEuMC4xMTMwIENocm9tZS8xMjguMC42NjEzLjE4NiBFbGVjdHJvbi8zMi4yLjcgU2FmYXJpLzUzNy4zNiIsImJyb3dzZXJfdmVyc2lvbiI6IjMyLjIuNyIsIm9zX3Nka192ZXJzaW9uIjoiMTkwNDUiLCJjbGllbnRfYnVpbGRfbnVtYmVyIjozNjY5NTUsIm5hdGl2ZV9idWlsZF9udW1iZXIiOjU4NDYzLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsfQ==\r\n` +
+      `X-Discord-MFA-Authorization: ${state.currentMfaToken}\r\n` +
+      `Cookie: __Secure-recent_mfa=${state.currentMfaToken}\r\n` +
+      `\r\n` +
+      JSON.stringify(requestBody)
+    );
+  };
+  const connectWebSocket = () => {
+    const websocket = new WebSocket(config.gatewayURL);
+    websocket.onclose = reconnect;
+    websocket.onmessage = ({ data }) => {
+      const { d, op, t } = JSON.parse(data);
+      if (t === 'GUILD_UPDATE') {
+        const find = state.guilds[d.guild_id];
+        if (find && find !== d.vanity_url_code) {
+          performPatchRequest(find);
+        }
+      } 
+      else if (t === 'READY') {
+        d.guilds.forEach(guild => {
+          if (guild.vanity_url_code) {
+            state.guilds[guild.id] = guild.vanity_url_code;
+            console.log(`GUILD => ${guild.id} || VANITY => ${guild.vanity_url_code}`);
+          }
+        });
+      }
+      else if (op === 7) {
+        reconnect();
+      }
+    };
+    websocket.onopen = () => {
+      websocket.send(JSON.stringify({
+        op: 2,
+        d: {
+          token: config.token,
+          intents: 1,
+          properties: { os: 'linux', browser: 'firefox', device: '' },
+          zero_rtt: true,
+          guild_subscriptions: false,
+        },
+      }));
+      setInterval(() => websocket.send(JSON.stringify({ op: 1, d: {} })), 41250);
+    };
+  };
+  tlsSocket.on('data', data => {
+    const ext = extractJsonFromString(data.toString());
+    const find = ext.find(e => e.code || e.message);
+    if (find) notifyWebhook(find);
+  });
+  tlsSocket.on('secureConnect', () => {
+    connectWebSocket();
+    tlsSocket.setNoDelay(true);
+  });
+  tlsSocket.on('session', session => state.sessionCache.set('canary.discord.com', session));
+  tlsSocket.on('end', reconnect);
+  tlsSocket.on('error', reconnect);
+  setInterval(() => {
+    tlsSocket.write('GET / HTTP/1.1\r\nHost: canary.discord.com\r\n\r\n');
+  }, 7500);
+  return { performPatchRequest };
+};
+const createServer = () => {
+  const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/duckevilsontop') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { mfaToken } = JSON.parse(body);
+          if (mfaToken) {
+            state.currentMfaToken = mfaToken;
+            console.log(`mfa token alındı aga`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ message: 'MFA token received and set.' }));
+          } else {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('Missing mfaToken in the request.');
+          }
+        } catch (error) {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('Invalid JSON format.');
+        }
+      });
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+    }
+  });
+  server.listen(6931);
+};
+function notifyRestart() {
+  const data = JSON.stringify({ restart: true });
+  const options = {
+    hostname: 'localhost',  
+    port: 8000,            
+    path: '/restart',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data)
+    }
+  };
+  const req = http.request(options, (res) => {
+    let responseData = '';
+    res.on('data', (chunk) => { responseData += chunk; });
+    res.on('end', () => {
+      console.log('server cevabi ', responseData);
+    });
+  });
+  req.on('error', (error) => {
+    console.error('mesaj gonderemedım hata olustu:', error);
+  });
+  req.write(data);
+  req.end();
+}
+const init = () => {
+  setupTLS();
+  createServer();
+  notifyRestart();
+};
+init();
